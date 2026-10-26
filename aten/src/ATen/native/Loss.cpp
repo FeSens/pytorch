@@ -28,6 +28,7 @@
 #include <ATen/ops/huber_loss_backward.h>
 #include <ATen/ops/huber_loss_backward_native.h>
 #include <ATen/ops/huber_loss_native.h>
+#include <ATen/ops/isneginf.h>
 #include <ATen/ops/kl_div_native.h>
 #include <ATen/ops/l1_loss_native.h>
 #include <ATen/ops/log.h>
@@ -267,11 +268,16 @@ Tensor kl_div(const Tensor& input, const Tensor& target, int64_t reduction, bool
   TORCH_CHECK(!at::isIntegralType(input.scalar_type(), /*include_bool*/true) &&
               !at::isIntegralType(target.scalar_type(), /*include_bool*/true),
               "kl_div: Integral inputs not supported.");
+  // A class with target probability 0 contributes 0 (0 * log 0 = 0) whatever
+  // the input. Computed directly, its term is 0 * -inf = nan when the input is
+  // -inf (a masked class) and, with log_target, for any input. The factor that
+  // multiplies the zero probability is set to 0 there instead, so neither the
+  // loss nor its gradients are nan.
   Tensor output;
   if (log_target) {
-    output = at::exp(target) * (target - input);
+    output = at::exp(target) * at::where(at::isneginf(target), 0, target - input);
   } else {
-    output = at::xlogy(target, target) - target * input;
+    output = at::xlogy(target, target) - target * at::where(target == 0, 0, input);
   }
   return apply_loss_reduction(output, reduction);
 }

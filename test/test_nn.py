@@ -15107,6 +15107,27 @@ class TestNNDeviceType(NNTestCase):
             torch.zeros_like(a)
         )
 
+    def test_kl_div_zero_probability_classes(self, device):
+        # A class with target probability 0 contributes 0 whatever its input, also
+        # when the input or the target log-probability is -inf (a masked class, or
+        # one outside a top-k teacher's support).
+        inf = float('inf')
+        inp = torch.tensor([[-inf, -0.5, -1.2], [-0.3, -inf, -2.0], [-0.1, -2.5, -inf]], device=device)
+        tgt = torch.tensor([[0.0, 0.6, 0.4], [0.7, 0.0, 0.3], [1.0, 0.0, 0.0]], device=device)
+        keep = tgt > 0
+        expected = (tgt[keep] * (tgt[keep].log() - inp[keep])).sum()
+        for log_target in (False, True):
+            x = inp.clone().requires_grad_()
+            t = (tgt.log() if log_target else tgt.clone()).requires_grad_()
+            loss = F.kl_div(x, t, reduction='sum', log_target=log_target)
+            self.assertEqual(loss, expected)
+            gx, gt = torch.autograd.grad(loss, (x, t))
+            # d(t log t)/dt diverges at t = 0, so only a log target has a finite
+            # gradient for every class.
+            self.assertTrue((gt if log_target else gt[keep]).isfinite().all())
+            self.assertEqual(gx[keep], -tgt[keep])
+            self.assertEqual(gx[~keep], torch.zeros_like(gx[~keep]))
+
     @skipMPS
     def test_smoothl1loss_intergral_target(self, device):
         def _input_grad(input, target, reduction):
